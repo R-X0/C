@@ -1,0 +1,32 @@
+[Unit]
+Description=Polygon Analytics Platform
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=forking
+User=ubuntu
+WorkingDirectory=/home/ubuntu/polygon-analytics
+Environment="PATH=/home/ubuntu/polygon-analytics/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Pre-start: ensure docker containers are running
+ExecStartPre=/usr/bin/docker-compose up -d
+ExecStartPre=/bin/sleep 10
+
+# Start the application
+ExecStart=/home/ubuntu/polygon-analytics/start_services.sh
+
+# Stop command
+ExecStop=/home/ubuntu/polygon-analytics/stop_services.sh
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
