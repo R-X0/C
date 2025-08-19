@@ -7,7 +7,6 @@ import base64
 from io import BytesIO
 import plotly.express as px
 import time
-import threading
 
 # API Configuration
 API_URL = "http://localhost:8000"
@@ -28,8 +27,6 @@ def init_session_state():
         st.session_state.last_template_result = None
     if "last_execution_result" not in st.session_state:
         st.session_state.last_execution_result = None
-    if "fetch_progress" not in st.session_state:
-        st.session_state.fetch_progress = {"status": "idle", "message": "", "progress": 0}
     if "last_fetch_symbol" not in st.session_state:
         st.session_state.last_fetch_symbol = "AAPL"
     if "last_prompt" not in st.session_state:
@@ -65,7 +62,7 @@ with st.sidebar:
         init_session_state()
         st.rerun()
 
-# Data Fetcher Page with Progress
+# Data Fetcher Page - OPTIMIZED
 if page == "Data Fetcher":
     st.header("📥 Fetch Stock Data")
     
@@ -92,28 +89,14 @@ if page == "Data Fetcher":
             max_value=datetime.now()
         )
     
-    # Progress container
-    progress_container = st.container()
-    
     if st.button("🔄 Fetch Data", type="primary"):
         st.session_state.last_fetch_symbol = symbol.upper()
         
-        # Calculate estimated time
-        days_to_fetch = (end_date - start_date).days + 1
-        estimated_time = days_to_fetch * 5  # Estimate 5 seconds per day
-        
-        with progress_container:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Start fetch with progress updates
-            status_text.text(f"Starting fetch for {symbol.upper()}...")
-            progress_bar.progress(10)
-            
+        # Show spinner without artificial delays
+        with st.spinner(f"Fetching data for {symbol.upper()}... This may take a few moments for large date ranges."):
             try:
-                # Make the API request
-                status_text.text(f"Connecting to Polygon API...")
-                progress_bar.progress(20)
+                # Make the API request without unnecessary progress updates
+                start_time = time.time()
                 
                 response = requests.post(
                     f"{API_URL}/api/fetch-data",
@@ -122,22 +105,14 @@ if page == "Data Fetcher":
                         "start_date": start_date.strftime("%Y-%m-%d"),
                         "end_date": end_date.strftime("%Y-%m-%d")
                     },
-                    stream=True,
-                    timeout=300  # 5 minute timeout
+                    timeout=600  # 10 minute timeout for large requests
                 )
                 
-                # Simulate progress during fetch
                 if response.status_code == 200:
-                    # Update progress incrementally
-                    for i in range(30, 90, 10):
-                        progress_bar.progress(i)
-                        status_text.text(f"Fetching tick data... ({i}%)")
-                        time.sleep(estimated_time / 10)
-                    
-                    progress_bar.progress(100)
                     result = response.json()
+                    elapsed_time = time.time() - start_time
                     
-                    st.success(f"✅ {result['message']}")
+                    st.success(f"✅ {result['message']} in {elapsed_time:.1f} seconds")
                     
                     # Show data summary
                     summary_response = requests.get(
@@ -149,7 +124,7 @@ if page == "Data Fetcher":
                         summary = summary_response.json()
                         
                         # Display summary in metrics
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2, col3, col4 = st.columns(4)
                         with col1:
                             st.metric("Symbol", symbol.upper())
                         with col2:
@@ -158,20 +133,22 @@ if page == "Data Fetcher":
                             if summary["date_range"]:
                                 st.metric("Date Range", 
                                     f"{summary['date_range']['start'][:10]} to {summary['date_range']['end'][:10]}")
+                        with col4:
+                            if summary['record_count'] > 0:
+                                rate = summary['record_count'] / elapsed_time
+                                st.metric("Fetch Rate", f"{rate:,.0f} records/sec")
                 else:
-                    st.error(f"Error: {response.json().get('detail', 'Unknown error')}")
+                    error_detail = response.json().get('detail', 'Unknown error')
+                    st.error(f"Error: {error_detail}")
                     
             except requests.exceptions.Timeout:
-                st.warning("⏱️ Request is taking longer than expected. Data fetch continues in background.")
-                st.info("You can switch tabs and check back later.")
+                st.error("⏱️ Request timed out. Try a smaller date range or check your connection.")
+            except requests.exceptions.ConnectionError:
+                st.error("❌ Could not connect to the API server. Make sure it's running.")
             except Exception as e:
                 st.error(f"Failed to fetch data: {str(e)}")
-            finally:
-                # Clear progress indicators
-                progress_bar.empty()
-                status_text.empty()
 
-# Analytics Generator Page with Persistence
+# Analytics Generator Page (unchanged but with minor optimization)
 elif page == "Analytics Generator":
     st.header("🤖 Generate Analytics Templates")
     
@@ -201,9 +178,6 @@ elif page == "Analytics Generator":
             st.session_state.last_prompt = prompt
             
             with st.spinner("Generating template with AI..."):
-                progress_placeholder = st.empty()
-                progress_placeholder.info("🤖 Sending request to GPT-4...")
-                
                 try:
                     response = requests.post(
                         f"{API_URL}/api/generate-template",
@@ -214,8 +188,6 @@ elif page == "Analytics Generator":
                         },
                         timeout=30
                     )
-                    
-                    progress_placeholder.empty()
                     
                     if response.status_code == 200:
                         result = response.json()
@@ -237,7 +209,6 @@ elif page == "Analytics Generator":
                         
                 except Exception as e:
                     st.error(f"Failed to generate template: {str(e)}")
-                    progress_placeholder.empty()
         else:
             st.warning("Please enter a prompt")
     
@@ -270,13 +241,7 @@ elif page == "Analytics Generator":
         
         if st.button("▶️ Execute Template", type="primary"):
             with st.spinner("Executing template..."):
-                exec_progress = st.progress(0)
-                exec_status = st.empty()
-                
                 try:
-                    exec_progress.progress(25)
-                    exec_status.text("Preparing execution environment...")
-                    
                     response = requests.post(
                         f"{API_URL}/api/execute-template",
                         json={
@@ -288,15 +253,8 @@ elif page == "Analytics Generator":
                         timeout=60
                     )
                     
-                    exec_progress.progress(75)
-                    exec_status.text("Processing results...")
-                    
                     if response.status_code == 200:
                         result = response.json()
-                        
-                        exec_progress.progress(100)
-                        exec_status.empty()
-                        exec_progress.empty()
                         
                         if result["success"]:
                             st.session_state.last_execution_result = result
@@ -309,24 +267,20 @@ elif page == "Analytics Generator":
                                     data = output["data"]
                                     
                                     try:
-                                        # Create DataFrame directly
                                         if isinstance(data, dict) and len(data) == 0:
                                             st.info("Query returned no data")
                                         else:
                                             df = pd.DataFrame(data)
                                             
                                             if not df.empty:
-                                                # Display the dataframe
                                                 st.dataframe(df, use_container_width=True)
                                                 
-                                                # Add metrics
                                                 col1, col2 = st.columns(2)
                                                 with col1:
                                                     st.metric("Rows", len(df))
                                                 with col2:
                                                     st.metric("Columns", len(df.columns))
                                                 
-                                                # Add download button
                                                 csv = df.to_csv(index=False)
                                                 st.download_button(
                                                     label="📥 Download CSV",
@@ -339,7 +293,6 @@ elif page == "Analytics Generator":
                                                 
                                     except Exception as e:
                                         st.error(f"Error creating table: {str(e)}")
-                                        st.code(f"Data structure: {str(data)[:500]}", language="json")
                                 else:
                                     st.warning("No data field in response")
                             
@@ -349,7 +302,6 @@ elif page == "Analytics Generator":
                                     img_data = base64.b64decode(output["chart"])
                                     st.image(img_data)
                                     
-                                    # Add download button for chart
                                     st.download_button(
                                         label="📥 Download Chart",
                                         data=img_data,
@@ -363,9 +315,6 @@ elif page == "Analytics Generator":
                         
                 except Exception as e:
                     st.error(f"Failed to execute template: {str(e)}")
-                finally:
-                    exec_progress.empty()
-                    exec_status.empty()
     else:
         st.info("👆 Generate a template above to execute it")
 
@@ -373,7 +322,6 @@ elif page == "Analytics Generator":
 elif page == "Saved Templates":
     st.header("💾 Saved Templates")
     
-    # Fetch templates
     try:
         response = requests.get(f"{API_URL}/api/templates")
         if response.status_code == 200:
@@ -390,7 +338,6 @@ elif page == "Saved Templates":
                         col1, col2 = st.columns(2)
                         with col1:
                             if st.button(f"Load Template", key=f"load_{template['id']}"):
-                                # Fetch full template details
                                 detail_response = requests.get(f"{API_URL}/api/template/{template['id']}")
                                 if detail_response.status_code == 200:
                                     detail = detail_response.json()
@@ -415,7 +362,6 @@ elif page == "Query History":
     st.header("📜 Query History")
     st.info("Query history feature coming soon...")
     
-    # Show last execution result if available
     if st.session_state.last_execution_result:
         st.subheader("Last Execution Result")
         result = st.session_state.last_execution_result

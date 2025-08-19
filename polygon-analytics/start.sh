@@ -16,6 +16,10 @@ docker-compose up -d
 echo "Waiting for PostgreSQL to be ready..."
 sleep 5
 
+# Activate virtual environment
+echo "Activating virtual environment..."
+source venv/bin/activate
+
 # Install Python dependencies
 echo "Installing Python dependencies..."
 pip install -r requirements.txt

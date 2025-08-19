@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import asyncio
 
@@ -32,6 +32,13 @@ class FetchDataRequest(BaseModel):
     start_date: str
     end_date: str
 
+class FetchDataResponse(BaseModel):
+    success: bool
+    message: str
+    symbol: str
+    date_range: str
+    records_fetched: Optional[int] = None
+
 class GenerateTemplateRequest(BaseModel):
     prompt: str
     save_template: bool = False
@@ -57,28 +64,59 @@ polygon_service = PolygonService()
 analytics_agent = AnalyticsAgent()
 template_executor = TemplateExecutor()
 
+# Global dictionary to track fetch status
+fetch_status = {}
+
 @app.get("/")
 async def root():
     return {"message": "Polygon Analytics API", "version": "1.0.0"}
 
-@app.post("/api/fetch-data")
+@app.post("/api/fetch-data", response_model=FetchDataResponse)
 async def fetch_data(request: FetchDataRequest, db: Session = Depends(get_db)):
-    """Fetch and store tick data from Polygon"""
+    """Fetch and store tick data from Polygon - Optimized version"""
     try:
+        # Validate dates
+        try:
+            start = datetime.strptime(request.start_date, "%Y-%m-%d")
+            end = datetime.strptime(request.end_date, "%Y-%m-%d")
+            
+            if start > end:
+                raise ValueError("Start date must be before end date")
+            
+            if (end - start).days > 30:
+                raise ValueError("Date range cannot exceed 30 days for optimal performance")
+                
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        # Start fetching data
+        print(f"API: Starting fetch for {request.symbol} from {request.start_date} to {request.end_date}")
+        
         records = await polygon_service.fetch_and_store_data(
             request.symbol,
             request.start_date,
             request.end_date,
             db
         )
-        return {
-            "success": True,
-            "message": f"Fetched and stored {records} records",
-            "symbol": request.symbol,
-            "date_range": f"{request.start_date} to {request.end_date}"
-        }
+        
+        return FetchDataResponse(
+            success=True,
+            message=f"Fetched and stored {records:,} records",
+            symbol=request.symbol,
+            date_range=f"{request.start_date} to {request.end_date}",
+            records_fetched=records
+        )
+        
     except Exception as e:
+        print(f"API Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/fetch-status/{task_id}")
+async def get_fetch_status(task_id: str):
+    """Get status of a fetch operation"""
+    if task_id in fetch_status:
+        return fetch_status[task_id]
+    return {"status": "not_found"}
 
 @app.post("/api/generate-template")
 async def generate_template(request: GenerateTemplateRequest, db: Session = Depends(get_db)):
@@ -217,10 +255,21 @@ async def data_summary(symbol: str, db: Session = Depends(get_db)):
         "symbol": symbol,
         "record_count": count,
         "date_range": {
-            "start": min_date[0] if min_date else None,
-            "end": max_date[0] if max_date else None
+            "start": min_date[0].isoformat() if min_date else None,
+            "end": max_date[0].isoformat() if max_date else None
         }
     }
+
+@app.delete("/api/clear-data/{symbol}")
+async def clear_symbol_data(symbol: str, db: Session = Depends(get_db)):
+    """Clear all data for a specific symbol"""
+    try:
+        deleted = db.query(TickData).filter(TickData.symbol == symbol.upper()).delete()
+        db.commit()
+        return {"success": True, "deleted_records": deleted}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
